@@ -2,6 +2,7 @@ use std::io::StdoutLock;
 
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
+use serde_json::ser::PrettyFormatter;
 
 // https://github.com/jepsen-io/maelstrom/blob/main/doc/protocol.md#messages
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -52,7 +53,7 @@ impl EchoNode {
         &mut self,
         input: Message,
         // state machine may want to send messages while it's executing as well
-        output: &mut serde_json::Serializer<StdoutLock>,
+        output: &mut serde_json::Serializer<StdoutLock, PrettyFormatter>,
     ) -> anyhow::Result<()> {
         match input.body.payload {
             Payload::Init { .. } => {
@@ -100,7 +101,7 @@ fn main() -> anyhow::Result<()> {
     let inputs = serde_json::Deserializer::from_reader(stdin).into_iter::<Message>();
 
     let stdout = std::io::stdout().lock();
-    let mut output = serde_json::Serializer::new(stdout);
+    let mut output = serde_json::Serializer::pretty(stdout);
 
     let mut state = EchoNode { id: 0 };
 
