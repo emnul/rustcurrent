@@ -1,8 +1,7 @@
-use std::io::StdoutLock;
+use std::io::{StdoutLock, Write};
 
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
-use serde_json::ser::PrettyFormatter;
 
 // https://github.com/jepsen-io/maelstrom/blob/main/doc/protocol.md#messages
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -52,8 +51,10 @@ impl EchoNode {
     pub fn step(
         &mut self,
         input: Message,
-        // state machine may want to send messages while it's executing as well
-        output: &mut serde_json::Serializer<StdoutLock, PrettyFormatter>,
+        // We changed the function signature here to StdoutLock bc the Maelstrom protocol requires that
+        // we write messages as JSON objects to Stdout *separated by newlines*
+        // We can't do this with serde_json::ser::PrettyFormatter AFAIK
+        output: &mut StdoutLock,
     ) -> anyhow::Result<()> {
         match input.body.payload {
             Payload::Init { .. } => {
@@ -66,9 +67,8 @@ impl EchoNode {
                         payload: Payload::InitOk,
                     },
                 };
-                reply
-                    .serialize(output)
-                    .context("Serialize reponse to init")?;
+                serde_json::to_writer(&mut *output, &reply).context("Serialize reponse to init")?;
+                output.write_all(b"\n").context("write trailing newline")?;
                 self.id += 1;
             }
             Payload::Echo { echo } => {
@@ -81,9 +81,10 @@ impl EchoNode {
                         payload: Payload::EchoOk { echo },
                     },
                 };
-                reply
-                    .serialize(output)
-                    .context("Serialize reponse to echo")?;
+                // need to perform a reborrow here so we can use stdout again after
+                // writer is done
+                serde_json::to_writer(&mut *output, &reply).context("Serialize reponse to init")?;
+                output.write_all(b"\n").context("write trailing newline")?;
                 self.id += 1;
             }
             Payload::InitOk { .. } => bail!("received init ok message"),
@@ -100,15 +101,14 @@ fn main() -> anyhow::Result<()> {
     // we know there will be multiple things we're going to deserialize
     let inputs = serde_json::Deserializer::from_reader(stdin).into_iter::<Message>();
 
-    let stdout = std::io::stdout().lock();
-    let mut output = serde_json::Serializer::pretty(stdout);
+    let mut stdout = std::io::stdout().lock();
 
     let mut state = EchoNode { id: 0 };
 
     for input in inputs {
         let input = input.context("Maelstrom input from STDIN could not be deserialized")?;
         state
-            .step(input, &mut output)
+            .step(input, &mut stdout)
             .context("Node step function failed")?;
     }
 
