@@ -1,6 +1,6 @@
 use std::io::StdoutLock;
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 
 // https://github.com/jepsen-io/maelstrom/blob/main/doc/protocol.md#messages
@@ -28,8 +28,17 @@ struct Body {
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 enum Payload {
-    Echo { echo: String },
-    EchoOk { echo: String },
+    Echo {
+        echo: String,
+    },
+    EchoOk {
+        echo: String,
+    },
+    Init {
+        node_id: String,
+        node_ids: Vec<String>,
+    },
+    InitOk,
 }
 
 // state machine
@@ -46,6 +55,21 @@ impl EchoNode {
         output: &mut serde_json::Serializer<StdoutLock>,
     ) -> anyhow::Result<()> {
         match input.body.payload {
+            Payload::Init { .. } => {
+                let reply = Message {
+                    src: input.dst,
+                    dst: input.src,
+                    body: Body {
+                        id: Some(self.id),
+                        in_reply_to: input.body.id,
+                        payload: Payload::InitOk,
+                    },
+                };
+                reply
+                    .serialize(output)
+                    .context("Serialize reponse to init")?;
+                self.id += 1;
+            }
             Payload::Echo { echo } => {
                 let reply = Message {
                     src: input.dst,
@@ -61,6 +85,7 @@ impl EchoNode {
                     .context("Serialize reponse to echo")?;
                 self.id += 1;
             }
+            Payload::InitOk { .. } => bail!("received init ok message"),
             Payload::EchoOk { .. } => {}
         }
 
@@ -70,6 +95,8 @@ impl EchoNode {
 
 fn main() -> anyhow::Result<()> {
     let stdin = std::io::stdin().lock();
+    // our Desrializer can be turned into an iterator. This is desirable because
+    // we know there will be multiple things we're going to deserialize
     let inputs = serde_json::Deserializer::from_reader(stdin).into_iter::<Message>();
 
     let stdout = std::io::stdout().lock();
