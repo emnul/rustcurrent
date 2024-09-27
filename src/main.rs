@@ -1,10 +1,10 @@
-use std::io::{StdoutLock, Write};
-
-use anyhow::{bail, Context};
+use anyhow::{self, bail, Context, Ok};
 use serde::{Deserialize, Serialize};
+use serde_json::{self};
+use std::io::{stdin, stdout, StdoutLock, Write};
 
-// https://github.com/jepsen-io/maelstrom/blob/main/doc/protocol.md#messages
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
 struct Message {
     src: String,
     #[serde(rename = "dest")]
@@ -12,19 +12,18 @@ struct Message {
     body: Body,
 }
 
-// serde flatten field attr: Flatten the contents of this field into the container it is defined in.
-//
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
 struct Body {
-    #[serde(rename = "msg_id")]
-    id: Option<usize>,
-    in_reply_to: Option<usize>,
     #[serde(flatten)]
     payload: Payload,
+    #[serde(rename = "msg_id")]
+    id: Option<usize>,
+    #[serde(rename = "in_reply_to")]
+    to: Option<usize>,
 }
 
-// serde tag container attr: On an enum: Use the internally tagged enum representation, with the given tag. See enum representations for details on this representation.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 enum Payload {
@@ -41,54 +40,47 @@ enum Payload {
     InitOk,
 }
 
-// state machine
 struct EchoNode {
     id: usize,
 }
 
 impl EchoNode {
-    // state machine step function
-    pub fn step(
-        &mut self,
-        input: Message,
-        // We changed the function signature here to StdoutLock bc the Maelstrom protocol requires that
-        // we write messages as JSON objects to Stdout *separated by newlines*
-        // We can't do this with serde_json::ser::PrettyFormatter AFAIK
-        output: &mut StdoutLock,
-    ) -> anyhow::Result<()> {
+    pub fn step(&mut self, input: Message, output: &mut StdoutLock) -> anyhow::Result<()> {
         match input.body.payload {
             Payload::Init { .. } => {
                 let reply = Message {
                     src: input.dst,
                     dst: input.src,
                     body: Body {
-                        id: Some(self.id),
-                        in_reply_to: input.body.id,
+                        to: input.body.id,
                         payload: Payload::InitOk,
+                        id: Some(self.id),
                     },
                 };
-                serde_json::to_writer(&mut *output, &reply).context("Serialize reponse to init")?;
+                serde_json::to_writer(&mut *output, &reply)
+                    .context("serialize response to Init")?;
                 output.write_all(b"\n").context("write trailing newline")?;
+
                 self.id += 1;
             }
+            Payload::InitOk => bail!("Received init_ok message"),
             Payload::Echo { echo } => {
                 let reply = Message {
                     src: input.dst,
                     dst: input.src,
                     body: Body {
-                        id: Some(self.id),
-                        in_reply_to: input.body.id,
+                        to: input.body.id,
                         payload: Payload::EchoOk { echo },
+                        id: Some(self.id),
                     },
                 };
-                // need to perform a reborrow here so we can use stdout again after
-                // writer is done
-                serde_json::to_writer(&mut *output, &reply).context("Serialize reponse to init")?;
+                serde_json::to_writer(&mut *output, &reply)
+                    .context("serialize response to Echo")?;
                 output.write_all(b"\n").context("write trailing newline")?;
+
                 self.id += 1;
             }
-            Payload::InitOk { .. } => bail!("received init ok message"),
-            Payload::EchoOk { .. } => {}
+            Payload::EchoOk { echo: _ } => {}
         }
 
         Ok(())
@@ -96,21 +88,47 @@ impl EchoNode {
 }
 
 fn main() -> anyhow::Result<()> {
-    let stdin = std::io::stdin().lock();
-    // our Desrializer can be turned into an iterator. This is desirable because
-    // we know there will be multiple things we're going to deserialize
-    let inputs = serde_json::Deserializer::from_reader(stdin).into_iter::<Message>();
+    let _stdin = stdin().lock();
+    let inputs = serde_json::Deserializer::from_reader(_stdin).into_iter::<Message>();
 
-    let mut stdout = std::io::stdout().lock();
-
-    let mut state = EchoNode { id: 0 };
+    let mut _stdout = stdout().lock();
+    let mut node = EchoNode { id: 0 };
 
     for input in inputs {
         let input = input.context("Maelstrom input from STDIN could not be deserialized")?;
-        state
-            .step(input, &mut stdout)
+
+        node.step(input, &mut _stdout)
             .context("Node step function failed")?;
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn print_out() -> Result<(), anyhow::Error> {
+        // let mut _stdout = AddNewlineWriter(stdout().lock());
+        let mut _stdout = stdout().lock();
+        let mut node = EchoNode { id: 0 };
+
+        let input = Message {
+            src: String::from("n1"),
+            dst: String::from("n2"),
+            body: Body {
+                payload: Payload::Echo {
+                    echo: String::from("Hi"),
+                },
+                id: Some(1),
+                to: Some(2),
+            },
+        };
+
+        node.step(input, &mut _stdout)
+            .context("Node step function failed")?;
+
+        Ok(())
+    }
 }
