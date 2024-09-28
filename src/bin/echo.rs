@@ -1,27 +1,8 @@
 use anyhow::{self, bail, Context, Ok};
+use rustcurrent::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{self};
-use std::io::{stdin, stdout, StdoutLock, Write};
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
-struct Message {
-    src: String,
-    #[serde(rename = "dest")]
-    dst: String,
-    body: Body,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
-struct Body {
-    #[serde(flatten)]
-    payload: Payload,
-    #[serde(rename = "msg_id")]
-    id: Option<usize>,
-    #[serde(rename = "in_reply_to")]
-    to: Option<usize>,
-}
+use std::io::{StdoutLock, Write};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
@@ -44,8 +25,8 @@ struct EchoNode {
     id: usize,
 }
 
-impl EchoNode {
-    pub fn step(&mut self, input: Message, output: &mut StdoutLock) -> anyhow::Result<()> {
+impl Node<Payload> for EchoNode {
+    fn step(&mut self, input: Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
         match input.body.payload {
             Payload::Init { .. } => {
                 let reply = Message {
@@ -88,47 +69,5 @@ impl EchoNode {
 }
 
 fn main() -> anyhow::Result<()> {
-    let _stdin = stdin().lock();
-    let inputs = serde_json::Deserializer::from_reader(_stdin).into_iter::<Message>();
-
-    let mut _stdout = stdout().lock();
-    let mut node = EchoNode { id: 0 };
-
-    for input in inputs {
-        let input = input.context("Maelstrom input from STDIN could not be deserialized")?;
-
-        node.step(input, &mut _stdout)
-            .context("Node step function failed")?;
-    }
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn print_out() -> Result<(), anyhow::Error> {
-        // let mut _stdout = AddNewlineWriter(stdout().lock());
-        let mut _stdout = stdout().lock();
-        let mut node = EchoNode { id: 0 };
-
-        let input = Message {
-            src: String::from("n1"),
-            dst: String::from("n2"),
-            body: Body {
-                payload: Payload::Echo {
-                    echo: String::from("Hi"),
-                },
-                id: Some(1),
-                to: Some(2),
-            },
-        };
-
-        node.step(input, &mut _stdout)
-            .context("Node step function failed")?;
-
-        Ok(())
-    }
+    main_loop(EchoNode { id: 0 })
 }

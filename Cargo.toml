@@ -1,5 +1,5 @@
 [package]
-name = "fly_io_dist_sys_challenges"
+name = "rustcurrent"
 version = "0.1.0"
 edition = "2021"
 
