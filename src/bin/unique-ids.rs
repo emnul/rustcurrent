@@ -1,9 +1,8 @@
-use anyhow::{self, bail, Context, Ok};
+use anyhow::{self, Context, Ok};
 use rustcurrent::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{self};
 use std::io::{StdoutLock, Write};
-use ulid::Ulid;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
@@ -14,39 +13,28 @@ enum Payload {
         #[serde(rename = "id")]
         guid: String,
     },
-    Init {
-        node_id: String,
-        node_ids: Vec<String>,
-    },
-    InitOk,
 }
 
 struct UniqueNode {
+    node: String,
     id: usize,
 }
 
-impl Node<Payload> for UniqueNode {
+impl Node<(), Payload> for UniqueNode {
+    fn from_init(_state: (), init: Init) -> anyhow::Result<Self>
+    where
+        Self: Sized,
+    {
+        Ok(UniqueNode {
+            node: init.node_id,
+            id: 1,
+        })
+    }
     fn step(&mut self, input: Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
         match input.body.payload {
-            Payload::Init { .. } => {
-                let reply = Message {
-                    src: input.dst,
-                    dst: input.src,
-                    body: Body {
-                        to: input.body.id,
-                        payload: Payload::InitOk,
-                        id: Some(self.id),
-                    },
-                };
-                serde_json::to_writer(&mut *output, &reply)
-                    .context("serialize response to Init")?;
-                output.write_all(b"\n").context("write trailing newline")?;
-
-                self.id += 1;
-            }
-            Payload::InitOk => bail!("Received init_ok message"),
             Payload::Generate => {
-                let guid = Ulid::new().to_string();
+                // Assumes node ids are not reused when nodes restart
+                let guid = format!("{}-{}", self.node, self.id);
                 let reply = Message {
                     src: input.dst,
                     dst: input.src,
@@ -70,5 +58,5 @@ impl Node<Payload> for UniqueNode {
 }
 
 fn main() -> anyhow::Result<()> {
-    main_loop(UniqueNode { id: 0 })
+    main_loop::<_, UniqueNode, _>(())
 }
