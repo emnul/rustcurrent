@@ -24,22 +24,13 @@ impl Node<(), Payload> for EchoNode {
         Ok(EchoNode { id: 1 })
     }
     fn step(&mut self, input: Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
-        match input.body.payload {
+        let mut reply = input.into_reply(Some(&mut self.id));
+        match reply.body.payload {
             Payload::Echo { echo } => {
-                let reply = Message {
-                    src: input.dst,
-                    dst: input.src,
-                    body: Body {
-                        to: input.body.id,
-                        payload: Payload::EchoOk { echo },
-                        id: Some(self.id),
-                    },
-                };
+                reply.body.payload = Payload::EchoOk { echo };
                 serde_json::to_writer(&mut *output, &reply)
                     .context("serialize response to Echo")?;
                 output.write_all(b"\n").context("write trailing newline")?;
-
-                self.id += 1;
             }
             Payload::EchoOk { echo: _ } => {}
         }

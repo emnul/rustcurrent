@@ -12,6 +12,25 @@ pub struct Message<Payload> {
     pub body: Body<Payload>,
 }
 
+// Payload agnostic impl
+impl<Payload> Message<Payload> {
+    pub fn into_reply(self, id: Option<&mut usize>) -> Self {
+        Self {
+            src: self.dst,
+            dst: self.src,
+            body: Body {
+                to: self.body.id,
+                payload: self.body.payload,
+                id: id.map(|id| {
+                    let mid = *id;
+                    *id += 1;
+                    mid
+                }),
+            },
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct Body<Payload> {
@@ -51,7 +70,7 @@ where
     P: DeserializeOwned,
     N: Node<S, P>,
 {
-    let mut stdin = stdin().lock();
+    let stdin = stdin().lock();
     let mut stdin = stdin.lines();
     let mut _stdout = stdout().lock();
 
