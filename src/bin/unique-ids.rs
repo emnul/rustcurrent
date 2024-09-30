@@ -2,7 +2,10 @@ use anyhow::{self, Context, Ok};
 use rustcurrent::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{self};
-use std::io::{StdoutLock, Write};
+use std::{
+    io::{StdoutLock, Write},
+    sync::mpsc::Sender,
+};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
@@ -21,7 +24,7 @@ struct UniqueNode {
 }
 
 impl Node<(), Payload> for UniqueNode {
-    fn from_init(_state: (), init: Init) -> anyhow::Result<Self>
+    fn from_init(_state: (), init: Init, _tx: Sender<Event<Payload>>) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
@@ -30,7 +33,11 @@ impl Node<(), Payload> for UniqueNode {
             id: 1,
         })
     }
-    fn step(&mut self, input: Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
+    fn step(&mut self, input: Event<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
+        let Event::Message(input) = input else {
+            panic!("got injected event when there's no event injection");
+        };
+
         let mut reply = input.into_reply(Some(&mut self.id));
         match reply.body.payload {
             Payload::Generate => {
@@ -49,5 +56,5 @@ impl Node<(), Payload> for UniqueNode {
 }
 
 fn main() -> anyhow::Result<()> {
-    main_loop::<_, UniqueNode, _>(())
+    main_loop::<_, UniqueNode, _, _>(())
 }

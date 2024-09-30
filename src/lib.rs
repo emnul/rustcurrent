@@ -1,7 +1,10 @@
 use anyhow::{self, Context, Ok};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{self};
-use std::io::{stdin, stdout, BufRead, StdoutLock, Write};
+use std::{
+    io::{stdin, stdout, BufRead, StdoutLock, Write},
+    sync::mpsc::Sender,
+};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -29,6 +32,22 @@ impl<Payload> Message<Payload> {
             },
         }
     }
+
+    pub fn send(&self, output: &mut impl Write) -> anyhow::Result<()>
+    where
+        Payload: Serialize,
+    {
+        serde_json::to_writer(&mut *output, self).context("serialize response message")?;
+        output.write_all(b"\n").context("write trailing newline")?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Event<Payload, InjectedPayload = ()> {
+    Message(Message<Payload>),
+    Injected(InjectedPayload),
+    EOF,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -56,20 +75,32 @@ pub struct Init {
     pub node_ids: Vec<String>,
 }
 
-pub trait Node<S, Payload> {
-    fn from_init(state: S, init: Init) -> anyhow::Result<Self>
+pub trait Node<S, Payload, InjectedPayload = ()> {
+    fn from_init(
+        state: S,
+        init: Init,
+        inject: Sender<Event<Payload, InjectedPayload>>,
+    ) -> anyhow::Result<Self>
     where
         Self: Sized;
-    fn step(&mut self, input: Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()>;
+    fn step(
+        &mut self,
+        input: Event<Payload, InjectedPayload>,
+        output: &mut StdoutLock,
+    ) -> anyhow::Result<()>;
 }
 
 /// Main loop now handles input message by reading the first message from stdin which is guaranteed
 /// to be an Init Message
-pub fn main_loop<S, N, P>(init_state: S) -> anyhow::Result<()>
+pub fn main_loop<S, N, P, IP>(init_state: S) -> anyhow::Result<()>
 where
-    P: DeserializeOwned,
-    N: Node<S, P>,
+    P: DeserializeOwned + Send + 'static,
+    N: Node<S, P, IP>,
+    // Channels require types to be Send
+    IP: Send + 'static,
 {
+    let (tx, rx) = std::sync::mpsc::channel();
+
     let stdin = stdin().lock();
     let mut stdin = stdin.lines();
     let mut _stdout = stdout().lock();
@@ -88,7 +119,9 @@ where
     let InitPayload::Init(init) = init_msg.body.payload else {
         panic!("first message should be init");
     };
-    let mut node: N = Node::from_init(init_state, init).context("node initialization failed")?;
+    // providing tx handle to node allows it to inject it's own messges
+    let mut node: N =
+        Node::from_init(init_state, init, tx.clone()).context("node initialization failed")?;
 
     let reply = Message {
         src: init_msg.dst,
@@ -104,14 +137,33 @@ where
     serde_json::to_writer(&mut _stdout, &reply).context("serialize response to Init")?;
     _stdout.write_all(b"\n").context("write trailing newline")?;
 
-    for line in stdin {
-        let line = line.context("Maelstrom input from STDIN could not be read")?;
-        let input: Message<P> = serde_json::from_str(&line)
-            .context("Maelstrom input from STDIN could not be deserialized")?;
+    // dropping the stdinlock doesn't mean that any buffer data from stdin will also be dropped
+    drop(stdin);
+    let jh = std::thread::spawn(move || {
+        let stdin = std::io::stdin().lock();
 
+        for line in stdin.lines() {
+            let line = line.context("Maelstrom input from STDIN could not be read")?;
+            let input: Message<P> = serde_json::from_str(&line)
+                .context("Maelstrom input from STDIN could not be deserialized")?;
+            if let Err(_) = tx.send(Event::Message(input)) {
+                return Ok(());
+            }
+        }
+        // Add a way for the node to learn it should exit
+        let _ = tx.send(Event::EOF);
+        Ok(())
+    });
+
+    for input in rx {
         node.step(input, &mut _stdout)
             .context("Node step function failed")?;
     }
+
+    // wait for thread once channel has closed
+    jh.join()
+        .expect("stdin thread panicked")
+        .context("stdin thread returned an error")?;
 
     Ok(())
 }
